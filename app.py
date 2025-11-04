@@ -4,6 +4,9 @@ from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 import os
 import json
+import traceback  # For error tracing
+
+print("App starting - imports loaded.")  # Debug: Confirm start
 
 # Grok for chat queries
 client = OpenAI(base_url="https://api.x.ai/v1", api_key=os.getenv("GROK_API_KEY"))
@@ -14,19 +17,27 @@ qdrant = QdrantClient(
     api_key=os.getenv("QDRANT_API_KEY"),
 )
 
+print("Qdrant client initialized.")  # Debug: Qdrant connection
+
 # Local embedder
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
+print("Embedder loaded.")  # Debug: Model load
+
 collection_name = "second_brain_local"  # New name to reset
 
-if not qdrant.collection_exists(collection_name):
-    qdrant.create_collection(
-        collection_name,
-        vectors_config=models.VectorParams(
-            size=384,  # Matches embedder
-            distance=models.Distance.COSINE,
-        ),
-    )
+try:
+    if not qdrant.collection_exists(collection_name):
+        qdrant.create_collection(
+            collection_name,
+            vectors_config=models.VectorParams(
+                size=384,  # Matches embedder
+                distance=models.Distance.COSINE,
+            ),
+        )
+    print("Collection checked/created.")  # Debug: Collection step
+except Exception as e:
+    print(f"Error with Qdrant collection: {str(e)}\n{traceback.format_exc()}")
 
 def embed(text):
     return embedder.encode(text).tolist()
@@ -108,4 +119,9 @@ with gr.Blocks() as demo:
     ask_btn.click(ask, [q, proj, tag], output)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", 7860)))
+    try:
+        port = int(os.getenv("PORT", 7860))
+        print(f"Launching Gradio on port {port}")  # Debug: Port confirm
+        demo.launch(server_name="0.0.0.0", server_port=port)
+    except Exception as e:
+        print(f"Error launching app: {str(e)}\n{traceback.format_exc()}")
