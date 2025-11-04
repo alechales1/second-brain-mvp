@@ -19,7 +19,7 @@ embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
 collection_name = "second_brain_local"  # New name to reset
 
-if not qdrant.has_collection(collection_name):
+if not qdrant.collection_exists(collection_name):
     qdrant.create_collection(
         collection_name,
         vectors_config=models.VectorParams(
