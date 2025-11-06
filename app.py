@@ -37,7 +37,7 @@ print("Embedder loaded.")
 # COLLECTION SETUP
 # -------------------------------------------------
 try:
-    if not qdrant.collection_exists(COLLECTION):  # Fixed: collection_exists() for newer clients
+    if not qdrant.collection_exists(COLLECTION):
         qdrant.create_collection(
             COLLECTION,
             vectors_config=models.VectorParams(size=EMBED_DIM, distance=models.Distance.COSINE),
@@ -111,7 +111,7 @@ def extract_text_chunks(obj):
     return [t.strip() for t in chunks if t.strip()]
 
 # -------------------------------------------------
-# INDEX FUNCTION
+# INDEX FUNCTION (FIXED FILE READ)
 # -------------------------------------------------
 @retry()
 def index_json(file, project="All", tag=""):
@@ -120,9 +120,10 @@ def index_json(file, project="All", tag=""):
 
     print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file.name}")
 
-    # Load JSON
+    # Load JSON — FIXED: use file.name
     try:
-        data = json.load(file)
+        with open(file.name, 'r') as f:
+            data = json.load(f)
         print("DEBUG: JSON loaded.")
     except Exception as e:
         print(f"ERROR: JSON load failed – {e}")
@@ -227,14 +228,13 @@ with gr.Blocks() as demo:
     ask_btn.click(ask, inputs=[q, proj, tag], outputs=output)
 
 # -------------------------------------------------
-# LAUNCH (simple, no FastAPI mount to avoid error)
+# LAUNCH
 # -------------------------------------------------
 if __name__ == "__main__":
     try:
         port = int(os.getenv("PORT", "7860"))
         print(f"Launching Gradio on 0.0.0.0:{port}")
 
-        # Optional basic auth
         auth_fn = None
         if APP_USER and APP_PASS:
             def _auth(username, password):
