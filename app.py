@@ -10,18 +10,14 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
-# -------------------------------------------------
 # CONFIG & SECRETS
-# -------------------------------------------------
 APP_USER = os.getenv("APP_USER")
 APP_PASS = os.getenv("APP_PASS")
 COLLECTION = "second_brain_local"
 EMBED_DIM = 384
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-beta")
 
-# -------------------------------------------------
 # CLIENTS
-# -------------------------------------------------
 print("App starting - imports loaded.")
 
 client = OpenAI(base_url="https://api.x.ai/v1", api_key=os.getenv("GROK_API_KEY"))
@@ -33,9 +29,7 @@ print("Qdrant client initialized.")
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
 print("Embedder loaded.")
 
-# -------------------------------------------------
 # COLLECTION SETUP
-# -------------------------------------------------
 try:
     if not qdrant.collection_exists(COLLECTION):
         qdrant.create_collection(
@@ -54,9 +48,7 @@ except Exception as e:
 print("DEBUG: Startup complete.")
 print(f"DEBUG: Using collection: {COLLECTION}")
 
-# -------------------------------------------------
 # RETRY DECORATOR
-# -------------------------------------------------
 def retry(max_attempts=3, delay=1):
     def decorator(fn):
         @wraps(fn)
@@ -75,9 +67,7 @@ def retry(max_attempts=3, delay=1):
         return wrapper
     return decorator
 
-# -------------------------------------------------
 # TEXT EXTRACTION
-# -------------------------------------------------
 def extract_text_chunks(obj):
     chunks = []
 
@@ -107,9 +97,7 @@ def extract_text_chunks(obj):
                 chunks.append(c)
     return [t.strip() for t in chunks if t.strip()]
 
-# -------------------------------------------------
-# INDEX FUNCTION — FIXED: Use file.read() + json.loads()
-# -------------------------------------------------
+# INDEX FUNCTION — FIXED
 @retry()
 def index_json(file, project="All", tag=""):
     if file is None:
@@ -117,13 +105,13 @@ def index_json(file, project="All", tag=""):
 
     print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {getattr(file, 'name', 'unknown')}")
 
-    # FIXED: Read file content as string, then parse
+    # FIXED: Gradio gives NamedString → use .read() + json.loads()
     try:
-        file_content = file.read()
-        if isinstance(file_content, bytes):
-            file_content = file_content.decode('utf-8')
-        data = json.loads(file_content)
-        print("DEBUG: JSON loaded via file.read().")
+        raw_content = file.read()
+        if isinstance(raw_content, bytes):
+            raw_content = raw_content.decode('utf-8')
+        data = json.loads(raw_content)
+        print("DEBUG: JSON loaded via file.read() + json.loads()")
     except Exception as e:
         print(f"ERROR: JSON load failed – {e}")
         return f"Error: Invalid JSON – {str(e)}"
@@ -160,9 +148,7 @@ def index_json(file, project="All", tag=""):
         print(f"ERROR: Upsert failed – {e}")
         return f"Error: Upsert failed – {str(e)}"
 
-# -------------------------------------------------
 # ASK FUNCTION
-# -------------------------------------------------
 @retry()
 def ask(q, proj="All", tag=""):
     if not q.strip():
@@ -200,9 +186,7 @@ def ask(q, proj="All", tag=""):
         print(f"ERROR: Ask failed – {e}")
         return f"Error: Ask failed – {str(e)}"
 
-# -------------------------------------------------
 # GRADIO UI
-# -------------------------------------------------
 with gr.Blocks() as demo:
     gr.Markdown("## Second Brain MVP")
     with gr.Row():
@@ -223,9 +207,7 @@ with gr.Blocks() as demo:
     index_btn.click(index_json, inputs=[upload, proj, tag], outputs=status)
     ask_btn.click(ask, inputs=[q, proj, tag], outputs=output)
 
-# -------------------------------------------------
 # LAUNCH
-# -------------------------------------------------
 if __name__ == "__main__":
     try:
         port = int(os.getenv("PORT", "7860"))
