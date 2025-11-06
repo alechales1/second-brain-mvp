@@ -55,7 +55,7 @@ print("DEBUG: Startup complete.")
 print(f"DEBUG: Using collection: {COLLECTION}")
 
 # -------------------------------------------------
-# RETRY DECORATOR (max 3 attempts)
+# RETRY DECORATOR
 # -------------------------------------------------
 def retry(max_attempts=3, delay=1):
     def decorator(fn):
@@ -76,12 +76,11 @@ def retry(max_attempts=3, delay=1):
     return decorator
 
 # -------------------------------------------------
-# TEXT EXTRACTION (all ChatGPT formats)
+# TEXT EXTRACTION
 # -------------------------------------------------
 def extract_text_chunks(obj):
     chunks = []
 
-    # Newer: {"messages": [{"role":..., "content": {"parts": [...]}}]}
     msgs = obj.get("messages")
     if isinstance(msgs, list):
         for m in msgs:
@@ -92,7 +91,6 @@ def extract_text_chunks(obj):
                 chunks.append(c)
         return [t.strip() for t in chunks if t.strip()]
 
-    # Older: {"mapping": {id: {"message": {"content": {"parts": [...]}}}}}
     mapping = obj.get("mapping")
     if isinstance(mapping, dict):
         for node in mapping.values():
@@ -102,7 +100,6 @@ def extract_text_chunks(obj):
             chunks.extend([p for p in parts if isinstance(p, str)])
         return [t.strip() for t in chunks if t.strip()]
 
-    # Fallback: list of dicts with "content"
     if isinstance(obj, list):
         for m in obj:
             c = m.get("content")
@@ -111,25 +108,26 @@ def extract_text_chunks(obj):
     return [t.strip() for t in chunks if t.strip()]
 
 # -------------------------------------------------
-# INDEX FUNCTION (FIXED FILE READ)
+# INDEX FUNCTION — FIXED: Use file.read() + json.loads()
 # -------------------------------------------------
 @retry()
 def index_json(file, project="All", tag=""):
     if file is None:
         return "No file uploaded."
 
-    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file.name}")
+    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {getattr(file, 'name', 'unknown')}")
 
-    # Load JSON — FIXED: use file.name
+    # FIXED: Read file content as string, then parse
     try:
-        with open(file.name, 'r') as f:
-            data = json.load(f)
-        print("DEBUG: JSON loaded.")
+        file_content = file.read()
+        if isinstance(file_content, bytes):
+            file_content = file_content.decode('utf-8')
+        data = json.loads(file_content)
+        print("DEBUG: JSON loaded via file.read().")
     except Exception as e:
         print(f"ERROR: JSON load failed – {e}")
         return f"Error: Invalid JSON – {str(e)}"
 
-    # Extract text
     try:
         chunks = extract_text_chunks(data)
         print(f"DEBUG: Extracted {len(chunks)} chunk(s).")
@@ -139,7 +137,6 @@ def index_json(file, project="All", tag=""):
         print(f"ERROR: Extraction failed – {e}")
         return f"Error: Extraction failed – {str(e)}"
 
-    # Embed
     try:
         embeddings = embedder.encode(chunks, convert_to_tensor=False)
         print(f"DEBUG: Generated {len(embeddings)} embedding(s).")
@@ -147,11 +144,10 @@ def index_json(file, project="All", tag=""):
         print(f"ERROR: Embedding failed – {e}")
         return f"Error: Embedding failed – {str(e)}"
 
-    # Batch upsert
     try:
         points = [
             models.PointStruct(
-                id=f"{project}_{tag}_{os.path.basename(file.name)}_{i}",
+                id=f"{project}_{tag}_{os.path.basename(getattr(file, 'name', 'unknown'))}_{i}",
                 vector=emb.tolist(),
                 payload={"text": chunk, "project": project, "tag": tag},
             )
