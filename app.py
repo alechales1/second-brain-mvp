@@ -10,13 +10,6 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
-# Optional FastAPI for /healthz
-try:
-    from fastapi import FastAPI
-    FASTAPI_AVAILABLE = True
-except ImportError:
-    FASTAPI_AVAILABLE = False
-
 # -------------------------------------------------
 # CONFIG & SECRETS
 # -------------------------------------------------
@@ -44,7 +37,7 @@ print("Embedder loaded.")
 # COLLECTION SETUP
 # -------------------------------------------------
 try:
-    if not qdrant.has_collection(COLLECTION):
+    if not qdrant.collection_exists(COLLECTION):  # Fixed: collection_exists() for newer clients
         qdrant.create_collection(
             COLLECTION,
             vectors_config=models.VectorParams(size=EMBED_DIM, distance=models.Distance.COSINE),
@@ -234,7 +227,7 @@ with gr.Blocks() as demo:
     ask_btn.click(ask, inputs=[q, proj, tag], outputs=output)
 
 # -------------------------------------------------
-# LAUNCH (with optional FastAPI + auth)
+# LAUNCH (simple, no FastAPI mount to avoid error)
 # -------------------------------------------------
 if __name__ == "__main__":
     try:
@@ -247,15 +240,6 @@ if __name__ == "__main__":
             def _auth(username, password):
                 return username == APP_USER and password == APP_PASS
             auth_fn = _auth
-
-        # Optional FastAPI health endpoint
-        fastapi_app = None
-        if FASTAPI_AVAILABLE:
-            fastapi_app = FastAPI()
-            @fastapi_app.get("/healthz")
-            def healthz():
-                return {"status": "ok", "collection": COLLECTION}
-            demo = gr.mount_gradio_app(fastapi_app, demo, path="/")
 
         demo.launch(
             server_name="0.0.0.0",
