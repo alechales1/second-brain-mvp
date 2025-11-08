@@ -97,21 +97,25 @@ def extract_text_chunks(obj):
                 chunks.append(c)
     return [t.strip() for t in chunks if t.strip()]
 
-# INDEX FUNCTION — FIXED
+# INDEX FUNCTION — UNIVERSAL HANDLER
 @retry()
 def index_json(file, project="All", tag=""):
     if file is None:
         return "No file uploaded."
 
-    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {getattr(file, 'name', 'unknown')}")
+    file_name = getattr(file, 'name', 'unknown')
+    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file_name}")
 
-    # FIXED: Gradio gives NamedString → use .read() + json.loads()
+    # UNIVERSAL FIX: Handle file-like or str/NamedString
     try:
-        raw_content = file.read()
+        if hasattr(file, 'read'):
+            raw_content = file.read()
+        else:
+            raw_content = file  # str or NamedString
         if isinstance(raw_content, bytes):
             raw_content = raw_content.decode('utf-8')
         data = json.loads(raw_content)
-        print("DEBUG: JSON loaded via file.read() + json.loads()")
+        print("DEBUG: JSON loaded universally.")
     except Exception as e:
         print(f"ERROR: JSON load failed – {e}")
         return f"Error: Invalid JSON – {str(e)}"
@@ -135,7 +139,7 @@ def index_json(file, project="All", tag=""):
     try:
         points = [
             models.PointStruct(
-                id=f"{project}_{tag}_{os.path.basename(getattr(file, 'name', 'unknown'))}_{i}",
+                id=f"{project}_{tag}_{file_name}_{i}",
                 vector=emb.tolist(),
                 payload={"text": chunk, "project": project, "tag": tag},
             )
