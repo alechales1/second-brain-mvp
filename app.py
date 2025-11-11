@@ -97,25 +97,20 @@ def extract_text_chunks(obj):
                 chunks.append(c)
     return [t.strip() for t in chunks if t.strip()]
 
-# INDEX FUNCTION — UNIVERSAL HANDLER
+# INDEX FUNCTION — FIXED FOR BOM
 @retry()
 def index_json(file, project="All", tag=""):
     if file is None:
         return "No file uploaded."
 
-    file_name = getattr(file, 'name', 'unknown')
-    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file_name}")
+    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file}")
 
-    # UNIVERSAL FIX: Handle file-like or str/NamedString
+    # FIXED: type="filepath", open 'rb', decode 'utf-8-sig' to strip BOM
     try:
-        if hasattr(file, 'read'):
-            raw_content = file.read()
-        else:
-            raw_content = file  # str or NamedString
-        if isinstance(raw_content, bytes):
-            raw_content = raw_content.decode('utf-8')
+        with open(file, 'rb') as f:
+            raw_content = f.read().decode('utf-8-sig')
         data = json.loads(raw_content)
-        print("DEBUG: JSON loaded universally.")
+        print("DEBUG: JSON loaded with BOM strip.")
     except Exception as e:
         print(f"ERROR: JSON load failed – {e}")
         return f"Error: Invalid JSON – {str(e)}"
@@ -139,7 +134,7 @@ def index_json(file, project="All", tag=""):
     try:
         points = [
             models.PointStruct(
-                id=f"{project}_{tag}_{file_name}_{i}",
+                id=f"{project}_{tag}_{os.path.basename(file)}_{i}",
                 vector=emb.tolist(),
                 payload={"text": chunk, "project": project, "tag": tag},
             )
@@ -195,7 +190,7 @@ with gr.Blocks() as demo:
     gr.Markdown("## Second Brain MVP")
     with gr.Row():
         with gr.Column():
-            upload = gr.File(label="Upload ChatGPT JSON", file_types=[".json"])
+            upload = gr.File(label="Upload ChatGPT JSON", file_types=[".json"], type="filepath")
             proj = gr.Dropdown(
                 ["All", "BYLD", "SUNRUN", "Church", "Pond", "Fish Farm", "D&D"],
                 label="Project"
