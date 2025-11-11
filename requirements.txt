@@ -1,4 +1,4 @@
-gradio
-openai
-qdrant-client
-sentence-transformers
+gradio==4.44.0
+openai==1.54.3
+qdrant-client==1.11.3
+sentence-transformers==3.2.1
