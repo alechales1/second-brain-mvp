@@ -1,5 +1,6 @@
 import os, json, time, traceback, uuid
 from functools import wraps
+import numpy as np
 
 import gradio as gr
 from openai import OpenAI
@@ -150,10 +151,21 @@ def index_json(file_path, project="All", tag=""):
         print(f"ERROR: Extraction failed — {e}\n{traceback.format_exc()}")
         return f"❌ Extraction failed: {str(e)}"
     
-    # 3. Generate embeddings
+    # 3. Generate embeddings with NaN filtering
     try:
         embeddings = embedder.encode(chunks, convert_to_tensor=False, show_progress_bar=False)
         embeddings = [emb.tolist() if hasattr(emb, "tolist") else list(emb) for emb in embeddings]
+        
+        # Filter out NaN values
+        clean_embeddings = []
+        for i, emb in enumerate(embeddings):
+            if any(np.isnan(emb)):
+                print(f"WARNING: Chunk {i} has NaN embedding, replacing with zeros")
+                clean_embeddings.append([0.0] * EMBED_DIM)
+            else:
+                clean_embeddings.append(emb)
+        
+        embeddings = clean_embeddings
         print(f"DEBUG: Generated {len(embeddings)} embeddings (dim {len(embeddings[0])})")
     except Exception as e:
         print(f"ERROR: Embedding failed — {e}\n{traceback.format_exc()}")
