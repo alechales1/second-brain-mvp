@@ -1,4 +1,6 @@
+torch==2.5.1
+sentence-transformers==3.2.1
 gradio==4.44.0
 openai==1.54.3
 qdrant-client==1.11.3
-sentence-transformers==3.2.1
+numpy==1.26.4
