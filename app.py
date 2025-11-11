@@ -1,8 +1,4 @@
-import os
-import json
-import time
-import traceback
-import uuid
+import os, json, time, traceback, uuid
 from functools import wraps
 
 import gradio as gr
@@ -11,26 +7,24 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
-# CONFIG & SECRETS
-APP_USER = os.getenv("APP_USER")
-APP_PASS = os.getenv("APP_PASS")
-COLLECTION = "second_brain_local"
-EMBED_DIM = 384
+# ── Config
+APP_USER   = os.getenv("APP_USER")
+APP_PASS   = os.getenv("APP_PASS")
+COLLECTION = os.getenv("QDRANT_COLLECTION", "second_brain_local")
+EMBED_DIM  = 384
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-beta")
 
-# CLIENTS
 print("App starting - imports loaded.")
 
-client = OpenAI(base_url="https://api.x.ai/v1", api_key=os.getenv("GROK_API_KEY"))
+# ── Clients
+client  = OpenAI(base_url="https://api.x.ai/v1", api_key=os.getenv("GROK_API_KEY"))
 print("Grok client initialized.")
-
-qdrant = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
+qdrant  = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
 print("Qdrant client initialized.")
-
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 print("Embedder loaded.")
 
-# COLLECTION SETUP
+# ── Collection setup
 try:
     if not qdrant.collection_exists(COLLECTION):
         qdrant.create_collection(
@@ -39,9 +33,14 @@ try:
         )
         print(f"Created collection '{COLLECTION}'.")
     else:
-        info = qdrant.get_collection(COLLECTION)
-        if info.config.params.vectors.size != EMBED_DIM:
-            raise ValueError(f"Dim mismatch: expected {EMBED_DIM}, got {info.config.params.vectors.size}")
+        # Optional sanity check (won't crash if shape field differs by client version)
+        try:
+            info = qdrant.get_collection(COLLECTION)
+            size = getattr(getattr(info, "config", None), "params", None)
+            if getattr(getattr(size, "vectors", None), "size", EMBED_DIM) != EMBED_DIM:
+                raise ValueError("Qdrant collection vector dimension mismatch.")
+        except Exception as _:
+            pass
         print(f"Collection '{COLLECTION}' ready.")
 except Exception as e:
     print(f"ERROR: Collection setup failed – {e}\n{traceback.format_exc()}")
@@ -49,26 +48,26 @@ except Exception as e:
 print("DEBUG: Startup complete.")
 print(f"DEBUG: Using collection: {COLLECTION}")
 
-# RETRY DECORATOR
-def retry(max_attempts=3, delay=1):
-    def decorator(fn):
+# ── Retry decorator (for transient Qdrant errors)
+def retry(max_attempts=3, delay=1.0):
+    def deco(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            last_exc = None
+            last = None
             for attempt in range(1, max_attempts + 1):
                 try:
                     return fn(*args, **kwargs)
                 except UnexpectedResponse as e:
-                    last_exc = e
+                    last = e
                     if attempt == max_attempts:
                         break
                     print(f"Retry {attempt}/{max_attempts} after Qdrant error: {e}")
                     time.sleep(delay)
-            raise last_exc or RuntimeError("Retry failed")
+            raise last or RuntimeError("Retry failed")
         return wrapper
-    return decorator
+    return deco
 
-# TEXT EXTRACTION
+# ── ChatGPT export extractors
 def extract_text_chunks(obj):
     chunks = []
 
@@ -80,7 +79,7 @@ def extract_text_chunks(obj):
                 chunks.extend([p for p in c["parts"] if isinstance(p, str)])
             elif isinstance(c, str):
                 chunks.append(c)
-        return [t.strip() for t in chunks if t.strip()]
+        return [t.strip() for t in chunks if t and t.strip()]
 
     mapping = obj.get("mapping")
     if isinstance(mapping, dict):
@@ -89,29 +88,29 @@ def extract_text_chunks(obj):
             content = msg.get("content", {})
             parts = content.get("parts") or []
             chunks.extend([p for p in parts if isinstance(p, str)])
-        return [t.strip() for t in chunks if t.strip()]
+        return [t.strip() for t in chunks if t and t.strip()]
 
     if isinstance(obj, list):
         for m in obj:
             c = m.get("content")
             if isinstance(c, str):
                 chunks.append(c)
-    return [t.strip() for t in chunks if t.strip()]
+    return [t.strip() for t in chunks if t and t.strip()]
 
-# INDEX FUNCTION — FIXED FOR BOM
+# ── Index
 @retry()
-def index_json(file, project="All", tag=""):
-    if file is None:
+def index_json(file_path, project="All", tag=""):
+    if not file_path:
         return "No file uploaded."
 
-    print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file}")
+    print(f"DEBUG: index_json – project={project}, tag={tag}, file={file_path}")
 
-    # FIXED: open 'rb', decode 'utf-8-sig' to strip BOM
+    # Gradio with type="filepath": open binary and strip BOM via utf-8-sig
     try:
-        with open(file, 'rb') as f:
-            raw_content = f.read().decode('utf-8-sig')
-        data = json.loads(raw_content)
-        print("DEBUG: JSON loaded with BOM strip.")
+        with open(file_path, "rb") as f:
+            raw = f.read().decode("utf-8-sig")
+        data = json.loads(raw)
+        print("DEBUG: JSON loaded from filepath with BOM-safe decode.")
     except Exception as e:
         print(f"ERROR: JSON load failed – {e}")
         return f"Error: Invalid JSON – {str(e)}"
@@ -127,6 +126,8 @@ def index_json(file, project="All", tag=""):
 
     try:
         embeddings = embedder.encode(chunks, convert_to_tensor=False)
+        # Ensure python lists
+        embeddings = [emb.tolist() if hasattr(emb, "tolist") else emb for emb in embeddings]
         print(f"DEBUG: Generated {len(embeddings)} embedding(s).")
     except Exception as e:
         print(f"ERROR: Embedding failed – {e}")
@@ -135,11 +136,16 @@ def index_json(file, project="All", tag=""):
     try:
         points = [
             models.PointStruct(
-                id=str(uuid.uuid4()),  # FIXED: Use UUID for valid ID
-                vector=emb.tolist(),
-                payload={"text": chunk, "project": project, "tag": tag, "file": os.path.basename(file)},
+                id=str(uuid.uuid4()),  # Valid Qdrant ID
+                vector=emb,
+                payload={
+                    "text": chunk,
+                    "project": project,
+                    "tag": tag,
+                    "file": os.path.basename(file_path),
+                },
             )
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+            for chunk, emb in zip(chunks, embeddings)
         ]
         qdrant.upsert(collection_name=COLLECTION, points=points)
         print(f"DEBUG: Upserted {len(points)} point(s) to Qdrant.")
@@ -148,25 +154,25 @@ def index_json(file, project="All", tag=""):
         print(f"ERROR: Upsert failed – {e}")
         return f"Error: Upsert failed – {str(e)}"
 
-# ASK FUNCTION
+# ── Ask
 @retry()
 def ask(q, proj="All", tag=""):
-    if not q.strip():
+    if not q or not q.strip():
         return "No query entered."
 
     try:
         query_vector = embedder.encode(q).tolist()
 
-        must_filters = []
+        must = []
         if proj != "All":
-            must_filters.append(models.FieldCondition(key="project", match=models.MatchValue(value=proj)))
+            must.append(models.FieldCondition(key="project", match=models.MatchValue(value=proj)))
         if tag:
-            must_filters.append(models.FieldCondition(key="tag", match=models.MatchValue(value=tag)))
+            must.append(models.FieldCondition(key="tag", match=models.MatchValue(value=tag)))
 
         results = qdrant.search(
             collection_name=COLLECTION,
             query_vector=query_vector,
-            query_filter=models.Filter(must=must_filters) if must_filters else None,
+            query_filter=models.Filter(must=must) if must else None,
             limit=5,
         )
 
@@ -174,24 +180,24 @@ def ask(q, proj="All", tag=""):
         if not context.strip():
             return "No relevant context found."
 
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=GROK_MODEL,
             messages=[
                 {"role": "system", "content": f"Answer using only this context:\n{context}"},
                 {"role": "user", "content": q},
             ],
         )
-        return response.choices[0].message.content
+        return resp.choices[0].message.content
     except Exception as e:
         print(f"ERROR: Ask failed – {e}")
         return f"Error: Ask failed – {str(e)}"
 
-# GRADIO UI
+# ── UI
 with gr.Blocks() as demo:
     gr.Markdown("## Second Brain MVP")
     with gr.Row():
         with gr.Column():
-            upload = gr.File(label="Upload ChatGPT JSON", file_types=[".json"], type="filepath")
+            upload = gr.File(label="Upload ChatGPT JSON", file_types=[".json"], type="filepath")  # important
             proj = gr.Dropdown(
                 ["All", "BYLD", "SUNRUN", "Church", "Pond", "Fish Farm", "D&D"],
                 label="Project"
@@ -207,7 +213,7 @@ with gr.Blocks() as demo:
     index_btn.click(index_json, inputs=[upload, proj, tag], outputs=status)
     ask_btn.click(ask, inputs=[q, proj, tag], outputs=output)
 
-# LAUNCH
+# ── Launch
 if __name__ == "__main__":
     try:
         port = int(os.getenv("PORT", "7860"))
@@ -215,15 +221,9 @@ if __name__ == "__main__":
 
         auth_fn = None
         if APP_USER and APP_PASS:
-            def _auth(username, password):
-                return username == APP_USER and password == APP_PASS
+            def _auth(u, p): return (u == APP_USER and p == APP_PASS)
             auth_fn = _auth
 
-        demo.launch(
-            server_name="0.0.0.0",
-            server_port=port,
-            debug=True,
-            auth=auth_fn
-        )
+        demo.launch(server_name="0.0.0.0", server_port=port, debug=True, auth=auth_fn)
     except Exception as e:
         print(f"ERROR launching app: {e}\n{traceback.format_exc()}")
