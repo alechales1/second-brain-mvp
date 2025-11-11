@@ -2,6 +2,7 @@ import os
 import json
 import time
 import traceback
+import uuid
 from functools import wraps
 
 import gradio as gr
@@ -105,7 +106,7 @@ def index_json(file, project="All", tag=""):
 
     print(f"DEBUG: index_json – project: {project}, tag: {tag}, file: {file}")
 
-    # FIXED: type="filepath", open 'rb', decode 'utf-8-sig' to strip BOM
+    # FIXED: open 'rb', decode 'utf-8-sig' to strip BOM
     try:
         with open(file, 'rb') as f:
             raw_content = f.read().decode('utf-8-sig')
@@ -134,9 +135,9 @@ def index_json(file, project="All", tag=""):
     try:
         points = [
             models.PointStruct(
-                id=f"{project}_{tag}_{os.path.basename(file)}_{i}",
+                id=str(uuid.uuid4()),  # FIXED: Use UUID for valid ID
                 vector=emb.tolist(),
-                payload={"text": chunk, "project": project, "tag": tag},
+                payload={"text": chunk, "project": project, "tag": tag, "file": os.path.basename(file)},
             )
             for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
         ]
