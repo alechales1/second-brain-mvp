@@ -26,9 +26,9 @@ print("App starting - imports loaded.")
 client = OpenAI(
     base_url="https://api.x.ai/v1",
     api_key=os.getenv("GROK_API_KEY"),
-    http_client=HttpxClient(proxies=None)  # Bypass Railway proxies
+    http_client=HttpxClient(trust_env=False)  # Ignores env proxies reliably
 )
-print("Grok client initialized (proxies disabled).")
+print("Grok client initialized (env proxies ignored).")
 
 qdrant = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
 print("Qdrant client initialized.")
