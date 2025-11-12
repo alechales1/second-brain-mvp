@@ -1,31 +1,42 @@
-import os, json, time, traceback, uuid
+import os
+import json
+import time
+import traceback
+import uuid
 from functools import wraps
 import numpy as np
 
 import gradio as gr
 from openai import OpenAI
+from httpx import Client as HttpxClient
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
-# ── Config
-APP_USER   = os.getenv("APP_USER")
-APP_PASS   = os.getenv("APP_PASS")
-COLLECTION = os.getenv("QDRANT_COLLECTION", "second_brain_local")
-EMBED_DIM  = 384
+# CONFIG & SECRETS
+APP_USER = os.getenv("APP_USER")
+APP_PASS = os.getenv("APP_PASS")
+COLLECTION = "second_brain_local"
+EMBED_DIM = 384
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-beta")
 
+# CLIENTS
 print("App starting - imports loaded.")
 
-# ── Clients
-client  = OpenAI(base_url="https://api.x.ai/v1", api_key=os.getenv("GROK_API_KEY"))
-print("Grok client initialized.")
-qdrant  = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
+client = OpenAI(
+    base_url="https://api.x.ai/v1",
+    api_key=os.getenv("GROK_API_KEY"),
+    http_client=HttpxClient(proxies=None)  # Bypass Railway proxies
+)
+print("Grok client initialized (proxies disabled).")
+
+qdrant = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
 print("Qdrant client initialized.")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+embedder = SentenceTransformer('all-MiniLM-L6-v2')
 print("Embedder loaded.")
 
-# ── Collection setup
+# COLLECTION SETUP
 try:
     if not qdrant.collection_exists(COLLECTION):
         qdrant.create_collection(
@@ -42,35 +53,32 @@ try:
         print(f"Collection '{COLLECTION}' ready (vector size {actual_size}).")
 except Exception as e:
     print(f"FATAL: Collection setup failed — {e}\n{traceback.format_exc()}")
-    raise
+    raise  # Stop app launch if collection broken
 
-print("DEBUG: Startup complete.")
-print(f"DEBUG: Using collection: {COLLECTION}")
-
-# ── Retry decorator (for transient Qdrant errors)
-def retry(max_attempts=3, delay=1.0):
-    def deco(fn):
+# RETRY DECORATOR
+def retry(max_attempts=3, delay=1):
+    def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            last = None
+            last_exc = None
             for attempt in range(1, max_attempts + 1):
                 try:
                     return fn(*args, **kwargs)
                 except UnexpectedResponse as e:
-                    last = e
+                    last_exc = e
                     if attempt == max_attempts:
                         break
                     print(f"Retry {attempt}/{max_attempts} after Qdrant error: {e}")
                     time.sleep(delay)
-            raise last or RuntimeError("Retry failed")
+            raise last_exc or RuntimeError("Retry failed")
         return wrapper
-    return deco
+    return decorator
 
-# ── ChatGPT export extractors
+# TEXT EXTRACTION
 def extract_text_chunks(obj):
     chunks = []
     
-    # Format 1: messages with content.parts
+    # Format 1: messages with content.parts (YOUR TEST FILE USES THIS)
     msgs = obj.get("messages")
     if isinstance(msgs, list):
         print(f"DEBUG: Found {len(msgs)} messages in 'messages' key")
@@ -111,7 +119,7 @@ def extract_text_chunks(obj):
     print(f"DEBUG: Final extraction: {len(result)} chunks")
     return result
 
-# ── Index
+# INDEXING
 @retry()
 def index_json(file_path, project="All", tag=""):
     if not file_path:
@@ -151,7 +159,7 @@ def index_json(file_path, project="All", tag=""):
         print(f"ERROR: Extraction failed — {e}\n{traceback.format_exc()}")
         return f"❌ Extraction failed: {str(e)}"
     
-    # 3. Generate embeddings with NaN filtering
+    # 3. Generate embeddings
     try:
         embeddings = embedder.encode(chunks, convert_to_tensor=False, show_progress_bar=False)
         embeddings = [emb.tolist() if hasattr(emb, "tolist") else list(emb) for emb in embeddings]
@@ -196,76 +204,73 @@ def index_json(file_path, project="All", tag=""):
         print(f"ERROR: Upsert failed — {e}\n{traceback.format_exc()}")
         return f"❌ Upsert failed: {str(e)}"
 
-# ── Ask
+# QUERYING
 @retry()
-def ask(q, proj="All", tag=""):
-    if not q or not q.strip():
-        return "No query entered."
-
+def ask_grok(query, project="All", tag=""):
+    if not query:
+        return "❌ No query provided."
+    
+    print(f"DEBUG: ask_grok — query='{query}', project={project}, tag={tag}")
+    
     try:
-        query_vector = embedder.encode(q).tolist()
-
-        must = []
-        if proj != "All":
-            must.append(models.FieldCondition(key="project", match=models.MatchValue(value=proj)))
+        query_emb = embedder.encode(query).tolist()
+        
+        filter_conditions = []
+        if project != "All":
+            filter_conditions.append(models.FieldCondition(key="project", match=models.MatchValue(value=project)))
         if tag:
-            must.append(models.FieldCondition(key="tag", match=models.MatchValue(value=tag)))
-
+            filter_conditions.append(models.FieldCondition(key="tag", match=models.MatchValue(value=tag)))
+        
         results = qdrant.search(
             collection_name=COLLECTION,
-            query_vector=query_vector,
-            query_filter=models.Filter(must=must) if must else None,
+            query_vector=query_emb,
+            query_filter=models.Filter(must=filter_conditions) if filter_conditions else None,
             limit=5,
         )
-
-        context = "\n".join([hit.payload.get("text", "") for hit in results if hit.payload])
-        if not context.strip():
-            return "No relevant context found."
-
-        resp = client.chat.completions.create(
+        
+        context = "\n\n".join([r.payload.get("text", "") for r in results])
+        print(f"DEBUG: Retrieved {len(results)} chunks for context")
+        
+        if not context:
+            return "⚠️ No relevant context found."
+        
+        response = client.chat.completions.create(
             model=GROK_MODEL,
             messages=[
-                {"role": "system", "content": f"Answer using only this context:\n{context}"},
-                {"role": "user", "content": q},
-            ],
+                {"role": "system", "content": "You are a helpful assistant. Use ONLY the provided context to answer the query accurately and concisely."},
+                {"role": "user", "content": f"Context: {context}\n\nQuery: {query}"}
+            ]
         )
-        return resp.choices[0].message.content
+        
+        return response.choices[0].message.content
     except Exception as e:
-        print(f"ERROR: Ask failed — {e}")
-        return f"Error: Ask failed — {str(e)}"
+        print(f"ERROR: Query failed — {e}\n{traceback.format_exc()}")
+        return f"❌ Query failed: {str(e)}"
 
-# ── UI
-with gr.Blocks() as demo:
-    gr.Markdown("## Second Brain MVP")
+# GRADIO INTERFACE
+with gr.Blocks(title="Second Brain MVP") as demo:
+    gr.Markdown("# Second Brain MVP\nPrivate knowledge base with Grok-powered queries.")
+    
     with gr.Row():
-        with gr.Column():
-            upload = gr.File(label="Upload ChatGPT JSON", file_types=[".json"], type="filepath")
-            proj = gr.Dropdown(
-                ["All", "BYLD", "SUNRUN", "Church", "Pond", "Fish Farm", "D&D"],
-                label="Project"
-            )
-            tag = gr.Textbox(label="Tag")
-            index_btn = gr.Button("Index")
-            status = gr.Textbox(label="Status", interactive=False)
-        with gr.Column():
-            q = gr.Textbox(label="Ask")
-            ask_btn = gr.Button("Ask")
-            output = gr.Textbox(label="Answer", interactive=False)
+        with gr.Column(scale=1):
+            gr.Markdown("### Index JSON")
+            file_input = gr.File(label="Upload ChatGPT JSON Export", type="filepath")
+            project_input = gr.Dropdown(choices=["All", "Pond", "BYLD", "Church", "Other"], value="All", label="Project")
+            tag_input = gr.Textbox(label="Tag (optional)")
+            index_button = gr.Button("Index File")
+            status_output = gr.Textbox(label="Status", interactive=False)
+        
+        with gr.Column(scale=2):
+            gr.Markdown("### Query Knowledge Base")
+            query_input = gr.Textbox(label="Your Question")
+            project_filter = gr.Dropdown(choices=["All", "Pond", "BYLD", "Church", "Other"], value="All", label="Filter by Project")
+            tag_filter = gr.Textbox(label="Filter by Tag (optional)")
+            ask_button = gr.Button("Ask Grok")
+            answer_output = gr.Textbox(label="Answer", interactive=False)
+    
+    index_button.click(index_json, inputs=[file_input, project_input, tag_input], outputs=status_output)
+    ask_button.click(ask_grok, inputs=[query_input, project_filter, tag_filter], outputs=answer_output)
 
-    index_btn.click(index_json, inputs=[upload, proj, tag], outputs=status)
-    ask_btn.click(ask, inputs=[q, proj, tag], outputs=output)
-
-# ── Launch
 if __name__ == "__main__":
-    try:
-        port = int(os.getenv("PORT", "7860"))
-        print(f"Launching Gradio on 0.0.0.0:{port}")
-
-        auth_fn = None
-        if APP_USER and APP_PASS:
-            def _auth(u, p): return (u == APP_USER and p == APP_PASS)
-            auth_fn = _auth
-
-        demo.launch(server_name="0.0.0.0", server_port=port, debug=True, auth=auth_fn)
-    except Exception as e:
-        print(f"ERROR launching app: {e}\n{traceback.format_exc()}")
+    port = int(os.getenv("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port, debug=True)
